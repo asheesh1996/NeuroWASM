@@ -67,7 +67,9 @@ export class ModelManager {
 
   async initialize(): Promise<boolean> {
     try {
-      const modelUrl: string = `/${this.modelName}`;
+      // Use Vite's BASE_URL so the path is correct both locally ("/")
+      // and on GitHub Pages ("/NeuroWASM/"). BASE_URL always ends with "/".
+      const modelUrl: string = `${import.meta.env.BASE_URL}${this.modelName}`;
 
       if (this.backend === 'wasm') {
         const opt: ort.InferenceSession.SessionOptions = { executionProviders: ['wasm'] };
