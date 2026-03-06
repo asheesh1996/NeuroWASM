@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NeuroWASM — Real-time YOLO Inference</title>
+    <meta name="description" content="Browser-native real-time object detection using ONNX Runtime Web and WebGPU." />
+    <link rel="stylesheet" href="/src/style.css">
+  </head>
+  <body>
+    <div id="app-container">
+
+      <!-- ── Top bar ── -->
+      <header id="top-bar">
+        <a class="app-logo" href="#">
+          <img src="/icon.png" alt="NeuroWASM logo" />
+          <span class="app-logo-text">NeuroWASM</span>
+        </a>
+
+        <div class="controls-group">
+          <select class="ctrl-select" id="camera-select" title="Camera source" aria-label="Camera source">
+            <option value="" disabled selected>Loading cameras…</option>
+          </select>
+
+          <select class="ctrl-select" id="model-select" title="ONNX model" aria-label="ONNX model">
+            <option value="yolo26n.onnx" selected>YOLO26-N</option>
+          </select>
+
+          <select class="ctrl-select" id="backend-select" title="Inference backend" aria-label="Inference backend">
+            <option value="webgpu-high-performance" selected>⚡ WebGPU — High Performance</option>
+            <option value="webgpu-low-power">🔋 WebGPU — Low Power</option>
+            <option value="wasm">🖥️ CPU — WASM</option>
+          </select>
+        </div>
+
+        <div class="badges-group">
+          <span class="status-pill initializing" id="status-badge">Initializing…</span>
+          <span class="fps-pill" id="fps-badge">0 FPS</span>
+        </div>
+      </header>
+
+      <!-- ── Camera viewport ── -->
+      <main id="viewport">
+        <div id="camera-frame">
+          <span class="corner-tr"></span>
+          <span class="corner-bl"></span>
+          <div class="scan-line"></div>
+          <video id="camera-feed" autoplay playsinline muted></video>
+          <canvas id="overlay-canvas"></canvas>
+        </div>
+      </main>
+
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
