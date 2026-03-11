@@ -1,25 +1,30 @@
 # NeuroWASM
 
-**Real-time object detection in the browser — no server, no cloud, no latency.**
+**Real-time heart rate monitoring in the browser — no server, no cloud, no latency.**
 
-NeuroWASM runs YOLO models entirely on-device using [ONNX Runtime Web](https://onnxruntime.ai/docs/get-started/with-javascript/web.html). It captures live webcam video, passes each frame through a YOLO ONNX model, and draws bounding boxes on a canvas overlay — all inside a single browser tab.
+NeuroWASM runs rPPG (remote photoplethysmography) and face detection models entirely on-device using [ONNX Runtime Web](https://onnxruntime.ai/docs/get-started/with-javascript/web.html). It captures live webcam video, detects your face, extracts the blood volume pulse signal from skin colour changes, and estimates heart rate — all inside a single browser tab.
 
 Two inference backends are supported:
 
 | Backend | When to use |
 |---|---|
-| **WebGPU** | Modern Chromium — runs the model on your GPU via the WebGPU API |
-| **CPU / WASM** | Any browser — runs the model in a WASM thread pool using SIMD + threads |
+| **WebGPU** | Modern Chromium — runs the models on your GPU via the WebGPU API |
+| **CPU / WASM** | Any browser — runs the models in a WASM thread pool using SIMD + threads |
 
 ---
 
 ## Demo
 
-```
-Camera feed → preprocess → ONNX model → postprocess (NMS) → canvas bounding boxes
+```mermaid
+flowchart 
+    A["Camera Feed"] --> B["Face Detection"]
+    B --> C["Face Crop & Preprocess"]
+    C --> D["rPPG Model"]
+    D --> E["Signal Processing"]
+    E --> F["Heart Rate (BPM)"]
 ```
 
-Detects all 80 COCO classes (person, car, dog, chair, …) with per-class colour coding and confidence scores.
+Estimates real-time heart rate from facial video using rPPG models (EfficientPhys, FactorizePhys) with face detection (BlazeFace, UltraFace).
 
 ---
 
@@ -55,57 +60,52 @@ npm run preview    # serve the built bundle locally
 
 ```
 NeuroWASM/
-├── index.html          # Single-page shell: video, canvas, Bootstrap controls
+├── index.html                # Single-page shell: video, canvas, controls
 ├── public/
-│   └── yolo26n.onnx    # YOLO model weights (add your own here)
+│   ├── blazeface_128.onnx    # BlazeFace face detector (default)
+│   ├── ultraface_320.onnx    # UltraFace face detector (legacy)
+│   ├── efficientphys.onnx    # EfficientPhys rPPG model
+│   └── factorizephys.onnx    # FactorizePhys rPPG model
+├── model_conversion/         # Python scripts to convert models to ONNX
 └── src/
-    ├── main.ts         # App entry point & frame loop
-    ├── modelManager.ts # ONNX session lifecycle + pre/postprocessing
-    ├── camera.ts       # MediaDevices camera abstraction
-    ├── ui.ts           # Canvas renderer + HTML control wiring
-    └── style.css       # Minimal global styles
+    ├── main.ts               # App entry point & frame loop
+    ├── sessionManager.ts     # Measurement session lifecycle
+    ├── camera.ts             # MediaDevices camera abstraction
+    ├── faceDetector.ts       # UltraFace face detector
+    ├── mediapipeDetector.ts  # BlazeFace face detector
+    ├── rppgProcessor.ts      # EfficientPhys rPPG inference
+    ├── factorizePhysProcessor.ts # FactorizePhys rPPG inference
+    ├── signalProcessing.ts   # BVP → heart rate (FFT, bandpass)
+    ├── qualityMonitor.ts     # Signal quality assessment
+    ├── ui.ts                 # Canvas renderer + HTML control wiring
+    └── style.css             # Global styles
 ```
 
 ### Data flow per frame
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  main.ts — serialised async loop (one frame at a time)      │
-│                                                             │
-│  requestAnimationFrame ──► camera.getVideoElement()         │
-│                              │                              │
-│                       modelManager.runInference()           │
-│                              │                              │
-│                     ┌────────▼────────┐                     │
-│                     │  preprocess()   │                     │
-│                     │  letterbox pad  │                     │
-│                     │  → Float32[640] │                     │
-│                     └────────┬────────┘                     │
-│                              │                              │
-│                     ┌────────▼────────┐                     │
-│                     │  session.run()  │                     │
-│                     │  WebGPU / WASM  │                     │
-│                     └────────┬────────┘                     │
-│                              │                              │
-│                     ┌────────▼────────┐                     │
-│                     │  postprocess()  │                     │
-│                     │  NMS filtering  │                     │
-│                     │  coord rescale  │                     │
-│                     └────────┬────────┘                     │
-│                              │                              │
-│                        ui.drawBoxes() ──► <canvas>          │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph main["main.ts — serialised async loop"]
+        A["requestAnimationFrame"] --> B["camera.getVideoElement()"]
+        B --> C["faceDetector.detect()"]
+        C --> D["rppgProcessor.addFrame()\n(crop face → ring buffer)"]
+        D --> E{"Buffer full?"}
+        E -- Yes --> F["rppgProcessor.runInference()\nWebGPU / WASM"]
+        F --> G["signalProcessing\nFFT + bandpass → HR"]
+        G --> H["ui.drawFaceROI()\n+ HR display"]
+        E -- No --> H
+    end
 ```
 
 ### Key design decisions
 
 **Serialised frame loop** — inference is `await`-ed before the next `requestAnimationFrame` is requested. This prevents WebGPU buffer race conditions (`Buffer was unmapped before mapping was resolved`) that occur when the GPU is still finishing a previous `OrtRun` when the next frame fires.
 
-**Letterbox preprocessing** — frames are resized to 640×640 with padding (not stretching) and the padding offsets are tracked so bounding boxes are correctly projected back to native video coordinates.
+**Sliding window rPPG** — face crops are stored in a pre-allocated ring buffer. Once enough frames accumulate (151 for EfficientPhys, 160 for FactorizePhys), inference runs on the full window. Subsequent inferences slide forward by 30 frames, reusing most of the buffer.
 
-**Hot-swap backends** — changing the backend dropdown disposes the current ONNX session (`session.release()`) and creates a new one without a page reload. The frame loop exits cleanly via an `isRunning` flag.
+**Hot-swap models & backends** — changing any dropdown (face detector, rPPG model, backend) disposes the current ONNX sessions and creates new ones without a page reload. The frame loop exits cleanly via an `isRunning` flag.
 
-**COCO 80-class support** — class names and per-class HSL colours are generated once at startup using golden-angle hue spacing for maximum visual contrast.
+**WebGPU fallback** — if WebGPU is unavailable, the app automatically falls back to the WASM backend and shows an in-app guide with instructions to enable GPU acceleration.
 
 ---
 
@@ -155,20 +155,34 @@ This confirms Chrome is now routing WebGPU to your NVIDIA card.
 | Control | Description |
 |---|---|
 | Camera dropdown | Switch between available webcam inputs |
-| Model dropdown | Select the ONNX model file to load |
-| Backend dropdown | Switch inference backend (reloads the model) |
-| Status badge | Shows current state: Initializing / Running / Error |
-| FPS badge | Inference throughput (frames per second) |
+| Backend dropdown | Switch inference backend (WebGPU / WASM) |
+| rPPG Model dropdown | EfficientPhys (default) or FactorizePhys |
+| Face Detector dropdown | BlazeFace (default) or UltraFace-320 |
+| Measure button | Start / stop heart rate measurement |
+| Status badge | Current state: Initializing / Ready / Measuring / Error |
+| FPS badge | Face detection throughput (frames per second) |
 
 ---
 
-## Adding a Model
+## Models
 
-1. Export your YOLO model to ONNX format with NMS embedded (output shape `[1, N, 6]` — `[x1, y1, x2, y2, conf, classId]` in absolute 640×640 coordinates).
-2. Place the `.onnx` file in `public/`.
-3. Add a `<option>` entry for it in `index.html` in the `#model-select` dropdown.
+### rPPG (heart rate estimation)
 
-Non-NMS formats (`[1, 4+80, anchors]` raw anchor outputs) are also supported — the postprocessor autodetects the layout and applies NMS internally.
+| Model | Input | Output | Size |
+|---|---|---|---|
+| **EfficientPhys** | `[1, 151, 3, 72, 72]` — 151 face crops | `[1, 150]` BVP signal | ~8.7 MB |
+| **FactorizePhys** | `[1, 160, 3, 72, 72]` — 160 face crops | `[1, 159]` BVP signal | ~280 KB |
+
+### Face detection
+
+| Model | Input | Output | Size |
+|---|---|---|---|
+| **BlazeFace** | `[1, 3, 128, 128]` NCHW | 896 anchor boxes + scores | ~0.4 MB |
+| **UltraFace-320** | `[1, 3, 240, 320]` NCHW | confidence + boxes | ~1.2 MB |
+
+### Model conversion
+
+See [model_conversion/README.md](model_conversion/README.md) for Docker-based conversion from PyTorch/TFLite to ONNX.
 
 ---
 
@@ -179,7 +193,7 @@ Non-NMS formats (`[1, 4+80, anchors]` raw anchor outputs) are also supported —
 | **Runtime** | [ONNX Runtime Web](https://onnxruntime.ai/) 1.24 |
 | **Build tool** | [Vite](https://vitejs.dev/) 7 |
 | **Language** | TypeScript 5.9 |
-| **UI** | Bootstrap 5.3 + vanilla Canvas API |
+| **UI** | Vanilla Canvas API + custom CSS |
 | **GPU API** | WebGPU (via ORT WebGPU backend) |
 | **CPU fallback** | WASM with SIMD + multi-threading |
 

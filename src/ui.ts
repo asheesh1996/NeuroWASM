@@ -1,15 +1,33 @@
 // ui.ts
-import type { BoundingBox, ModelManager } from './modelManager';
+import type { QualityResult } from './qualityMonitor';
+import type { SessionStats, FrameUpdate } from './sessionManager';
 
 export class UIManager {
-  private canvas: HTMLCanvasElement;
-  private ctx: CanvasRenderingContext2D;
-  private cameraSelect: HTMLSelectElement;
-  private statusBadge: HTMLElement;
-  private fpsBadge: HTMLElement;
-  private cameraFrame: HTMLElement;
-  private cameraFeed: HTMLVideoElement;
-  private modelManager: ModelManager | null = null;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly ctx: CanvasRenderingContext2D;
+  private readonly cameraSelect: HTMLSelectElement;
+  private readonly statusBadge: HTMLElement;
+  private readonly fpsBadge: HTMLElement;
+  private readonly cameraFrame: HTMLElement;
+  private readonly cameraFeed: HTMLVideoElement;
+
+  // HR panel elements
+  private readonly hrPanel: HTMLElement;
+  private readonly hrValue: HTMLElement;
+  private readonly qualityFill: HTMLElement;
+  private readonly qualityText: HTMLElement;
+  private readonly warmupSection: HTMLElement;
+  private readonly warmupFill: HTMLElement;
+  private readonly warmupText: HTMLElement;
+  private readonly elapsedValue: HTMLElement;
+  private readonly qualityIssues: HTMLElement;
+
+  // Perf FPS counters
+  private readonly faceFpsValue: HTMLElement;
+  private readonly hrFpsValue: HTMLElement;
+
+  // Results panel elements
+  private readonly resultsPanel: HTMLElement;
 
   constructor(canvasId: string) {
     this.canvas      = document.getElementById(canvasId) as HTMLCanvasElement;
@@ -20,14 +38,28 @@ export class UIManager {
     this.cameraFrame = document.getElementById('camera-frame') as HTMLElement;
     this.cameraFeed  = document.getElementById('camera-feed') as HTMLVideoElement;
 
+    // HR panel
+    this.hrPanel       = document.getElementById('hr-panel')!;
+    this.hrValue       = document.getElementById('hr-value')!;
+    this.qualityFill   = document.getElementById('quality-fill')!;
+    this.qualityText   = document.getElementById('quality-text')!;
+    this.warmupSection = document.getElementById('warmup-section')!;
+    this.warmupFill    = document.getElementById('warmup-fill')!;
+    this.warmupText    = document.getElementById('warmup-text')!;
+    this.elapsedValue  = document.getElementById('elapsed-value')!;
+    this.qualityIssues = document.getElementById('quality-issues')!;
+
+    // Perf FPS counters
+    this.faceFpsValue = document.getElementById('face-fps-value')!;
+    this.hrFpsValue   = document.getElementById('hr-fps-value')!;
+
+    // Results panel
+    this.resultsPanel  = document.getElementById('results-panel')!;
+
     // Resize the camera-frame whenever the window or video dimensions change
     window.addEventListener('resize', () => this.fitFrame());
     this.cameraFeed.addEventListener('loadedmetadata', () => this.fitFrame());
     this.cameraFeed.addEventListener('resize', () => this.fitFrame());
-  }
-
-  setModelManager(mm: ModelManager) {
-    this.modelManager = mm;
   }
 
   /**
@@ -38,9 +70,11 @@ export class UIManager {
   fitFrame() {
     const vw = this.cameraFeed.videoWidth  || 1280;
     const vh = this.cameraFeed.videoHeight || 720;
-    const viewport = document.getElementById('viewport')!;
+    const viewport = document.getElementById('viewport-content')!;
     const pad = 20 * 2; // 20px padding each side
-    const maxW = viewport.clientWidth  - pad;
+    // Account for side panel width
+    const panelWidth = (!this.hrPanel.hidden || !this.resultsPanel.hidden) ? 320 : 0;
+    const maxW = viewport.clientWidth  - pad - panelWidth;
     const maxH = viewport.clientHeight - pad;
 
     const scale = Math.min(maxW / vw, maxH / vh);
@@ -95,55 +129,161 @@ export class UIManager {
     this.fpsBadge.textContent = `${fps.toFixed(1)} FPS`;
   }
 
+  // ── Heart Rate UI ──────────────────────────────────────────
+
+  /** Show or hide the HR measurement panel */
+  showHRPanel(visible: boolean) {
+    this.hrPanel.hidden = !visible;
+    this.fitFrame(); // re-fit camera with/without side panel
+  }
+
+  /** Show or hide the results panel */
+  showResultsPanel(visible: boolean) {
+    this.resultsPanel.hidden = !visible;
+    this.fitFrame();
+  }
+
+  /** Update all HR panel elements from a FrameUpdate */
+  updateFromFrame(update: FrameUpdate) {
+    // Heart rate value
+    if (update.heartRate > 0) {
+      this.hrValue.textContent = String(update.heartRate);
+      this.hrValue.classList.add('pulsing');
+    } else {
+      this.hrValue.textContent = '--';
+      this.hrValue.classList.remove('pulsing');
+    }
+
+    // Quality bar
+    this.updateQuality(update.quality);
+
+    // Warmup progress
+    if (update.state === 'warmup') {
+      this.warmupSection.hidden = false;
+      const pct = Math.round(update.warmupProgress * 100);
+      this.warmupFill.style.width = `${pct}%`;
+      this.warmupText.textContent = `${pct}%`;
+    } else {
+      this.warmupSection.hidden = true;
+    }
+
+    // Elapsed time
+    this.elapsedValue.textContent = this.formatTime(update.elapsed);
+
+    // Per-pipeline FPS counters
+    this.faceFpsValue.textContent = update.faceDetectFps > 0 ? update.faceDetectFps.toFixed(1) : '--';
+    this.hrFpsValue.textContent   = update.hrInferenceFps > 0 ? update.hrInferenceFps.toFixed(2) : '--';
+  }
+
+  /** Update the quality indicator */
+  private updateQuality(quality: QualityResult) {
+    const pct = Math.round(quality.score * 100);
+    this.qualityFill.style.width = `${pct}%`;
+    this.qualityFill.className = `quality-fill ${quality.level}`;
+    this.qualityText.textContent = quality.level.charAt(0).toUpperCase() + quality.level.slice(1);
+
+    // Show issues
+    this.qualityIssues.textContent = quality.issues.length > 0
+      ? quality.issues.join(' • ')
+      : '';
+  }
+
+  /** Display session results */
+  showResults(stats: SessionStats) {
+    document.getElementById('result-avg-hr')!.textContent = String(stats.avgHR);
+    document.getElementById('result-min-hr')!.textContent = String(stats.minHR);
+    document.getElementById('result-max-hr')!.textContent = String(stats.maxHR);
+    document.getElementById('result-duration')!.textContent = String(Math.round(stats.duration));
+    document.getElementById('result-confidence')!.textContent = String(Math.round(stats.avgConfidence * 100));
+
+    this.showHRPanel(false);
+    this.showResultsPanel(true);
+  }
+
   /**
-   * Draw bounding boxes.
-   * Because the video uses object-fit:fill inside the frame and the canvas
-   * has the same pixel dimensions as the frame, we simply scale video
-   * coordinates by (canvasW / videoW, canvasH / videoH).
+   * Draw face detection bounding box on canvas.
+   * Color based on quality: green=excellent, yellow=good, red=poor
    */
-  drawBoxes(boxes: BoundingBox[], videoWidth: number, videoHeight: number) {
+  drawFaceROI(
+    bbox: { x: number; y: number; w: number; h: number },
+    videoWidth: number,
+    videoHeight: number,
+    quality: QualityResult['level']
+  ) {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
-    if (boxes.length === 0) return;
-    if (!videoWidth || !videoHeight) return;
 
     const scaleX = this.canvas.width  / videoWidth;
     const scaleY = this.canvas.height / videoHeight;
 
+    const x = bbox.x * scaleX;
+    const y = bbox.y * scaleY;
+    const w = bbox.w * scaleX;
+    const h = bbox.h * scaleY;
+
+    const colorMap: Record<string, string> = {
+      excellent: '#00e8a0',
+      good: '#ffcc44',
+      poor: '#ff7070',
+      invalid: '#555',
+    };
+    const color = colorMap[quality] ?? '#00e8a0';
+
     this.ctx.save();
 
-    for (const box of boxes) {
-      const x = box.x1 * scaleX;
-      const y = box.y1 * scaleY;
-      const w = (box.x2 - box.x1) * scaleX;
-      const h = (box.y2 - box.y1) * scaleY;
-      const color = this.modelManager?.getClassColor(box.classIndex) ?? '#00ff90';
-      const label = `${box.label} ${(box.score * 100).toFixed(0)}%`;
+    // Draw face box with glow
+    this.ctx.shadowColor = color;
+    this.ctx.shadowBlur = 10;
+    this.ctx.strokeStyle = color;
+    this.ctx.lineWidth = 2;
+    this.ctx.setLineDash([8, 4]);
+    this.ctx.strokeRect(x, y, w, h);
+    this.ctx.setLineDash([]);
 
-      // Box glow
-      this.ctx.shadowColor = color;
-      this.ctx.shadowBlur  = 8;
-      this.ctx.strokeStyle = color;
-      this.ctx.lineWidth   = 2;
-      this.ctx.strokeRect(x, y, w, h);
+    // Draw corner brackets (like a targeting reticle)
+    const cornerLen = Math.min(w, h) * 0.2;
+    this.ctx.shadowBlur = 6;
+    this.ctx.lineWidth = 3;
+    this.ctx.setLineDash([]);
 
-      // Label pill
-      this.ctx.shadowBlur  = 0;
-      this.ctx.font        = 'bold 12px Inter, Arial, sans-serif';
-      const tw   = this.ctx.measureText(label).width + 10;
-      const th   = 20;
-      const ly   = y > th + 4 ? y - th - 2 : y + 2;
+    // top-left
+    this.ctx.beginPath();
+    this.ctx.moveTo(x, y + cornerLen);
+    this.ctx.lineTo(x, y);
+    this.ctx.lineTo(x + cornerLen, y);
+    this.ctx.stroke();
 
-      this.ctx.fillStyle = color;
-      this.ctx.beginPath();
-      this.ctx.roundRect(x - 1, ly, tw, th, 4);
-      this.ctx.fill();
+    // top-right
+    this.ctx.beginPath();
+    this.ctx.moveTo(x + w - cornerLen, y);
+    this.ctx.lineTo(x + w, y);
+    this.ctx.lineTo(x + w, y + cornerLen);
+    this.ctx.stroke();
 
-      this.ctx.fillStyle  = '#ffffff';
-      this.ctx.shadowColor= 'rgba(0,0,0,0.6)';
-      this.ctx.shadowBlur = 2;
-      this.ctx.fillText(label, x + 4, ly + 14);
-    }
+    // bottom-left
+    this.ctx.beginPath();
+    this.ctx.moveTo(x, y + h - cornerLen);
+    this.ctx.lineTo(x, y + h);
+    this.ctx.lineTo(x + cornerLen, y + h);
+    this.ctx.stroke();
+
+    // bottom-right
+    this.ctx.beginPath();
+    this.ctx.moveTo(x + w - cornerLen, y + h);
+    this.ctx.lineTo(x + w, y + h);
+    this.ctx.lineTo(x + w, y + h - cornerLen);
+    this.ctx.stroke();
 
     this.ctx.restore();
+  }
+
+  /** Clear the overlay canvas */
+  clearOverlay() {
+    this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+  }
+
+  private formatTime(seconds: number): string {
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s.toString().padStart(2, '0')}`;
   }
 }

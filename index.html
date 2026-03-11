@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>NeuroWASM — Real-time YOLO Inference</title>
-    <meta name="description" content="Browser-native real-time object detection using ONNX Runtime Web and WebGPU." />
+    <title>NeuroWASM — Real-time Heart Rate Monitor</title>
+    <meta name="description" content="Browser-native real-time heart rate estimation using rPPG, ONNX Runtime Web and WebGPU." />
     <link rel="stylesheet" href="/src/style.css">
   </head>
   <body>
@@ -23,15 +23,22 @@
             <option value="" disabled selected>Loading cameras…</option>
           </select>
 
-          <select class="ctrl-select" id="model-select" title="ONNX model" aria-label="ONNX model">
-            <option value="yolo26n.onnx" selected>YOLO26-N</option>
-          </select>
-
           <select class="ctrl-select" id="backend-select" title="Inference backend" aria-label="Inference backend">
-            <option value="webgpu-high-performance" selected>⚡ WebGPU — High Performance</option>
+            <option value="webgpu-high-performance" selected>⚡ WebGPU — High Perf</option>
             <option value="webgpu-low-power">🔋 WebGPU — Low Power</option>
             <option value="wasm">🖥️ CPU — WASM</option>
           </select>
+
+          <select class="ctrl-select" id="rppg-model-select" title="rPPG model" aria-label="rPPG model">
+            <option value="factorizephys">💓 FactorizePhys</option>
+            <option value="efficientphys" selected>💓 EfficientPhys</option>
+          </select>
+
+          <select class="ctrl-select" id="face-model-select" title="Face detector" aria-label="Face detector">
+            <option value="blazeface">👁 BlazeFace</option>
+            <option value="ultraface" selected>👁 UltraFace-320</option>
+          </select>
+
         </div>
 
         <div class="badges-group">
@@ -40,8 +47,53 @@
         </div>
       </header>
 
-      <!-- ── Camera viewport ── -->
+      <!-- ── Main content ── -->
       <main id="viewport">
+
+        <!-- ── WebGPU Setup Guide (shown when GPU unavailable) ── -->
+        <div id="webgpu-banner" class="webgpu-banner" hidden>
+          <button class="webgpu-banner-close" id="webgpu-banner-close" title="Dismiss">&times;</button>
+          <h3 class="webgpu-banner-title">⚡ WebGPU Not Available</h3>
+          <p class="webgpu-banner-desc">
+            Running on CPU (WASM). For significantly faster inference, enable WebGPU by setting Chrome
+            to use your dedicated GPU:
+          </p>
+
+          <div class="webgpu-banner-options">
+            <div class="webgpu-banner-option">
+              <h4>Option A — Windows Graphics Settings (recommended)</h4>
+              <ol>
+                <li>Open <strong>Settings → System → Display</strong></li>
+                <li>Scroll down and click <strong>Graphics settings</strong></li>
+                <li>Under "Add an app", choose <strong>Desktop app</strong> and click <strong>Browse</strong></li>
+                <li>Navigate to your Chrome executable:<br>
+                  <code>C:\Program Files\Google\Chrome\Application\chrome.exe</code></li>
+                <li>Click <strong>Options</strong>, select <strong>High performance</strong>, click <strong>Save</strong></li>
+                <li><strong>Restart Chrome completely</strong></li>
+              </ol>
+            </div>
+
+            <div class="webgpu-banner-option">
+              <h4>Option B — NVIDIA Control Panel</h4>
+              <ol>
+                <li>Right-click desktop → <strong>NVIDIA Control Panel</strong></li>
+                <li>Go to <strong>3D Settings → Manage 3D Settings → Program Settings</strong></li>
+                <li>Select <strong>Google Chrome</strong> (add manually if not listed)</li>
+                <li>Set <strong>"Preferred graphics processor"</strong> to <strong>High-performance NVIDIA processor</strong></li>
+                <li>Click <strong>Apply</strong> and restart Chrome</li>
+              </ol>
+            </div>
+          </div>
+
+          <p class="webgpu-banner-verify">
+            After restarting, open DevTools console and look for:<br>
+            <code>🎮 WebGPU Adapter: nvidia — NVIDIA GeForce RTX ...</code>
+          </p>
+        </div>
+
+        <div id="viewport-content">
+
+        <!-- Camera feed + overlay -->
         <div id="camera-frame">
           <span class="corner-tr"></span>
           <span class="corner-bl"></span>
@@ -49,6 +101,92 @@
           <video id="camera-feed" autoplay playsinline muted></video>
           <canvas id="overlay-canvas"></canvas>
         </div>
+
+        <!-- ── Heart Rate Panel (visible during measurement) ── -->
+        <aside id="hr-panel" class="glass-panel" hidden aria-label="Heart rate monitor">
+
+          <div id="hr-display">
+            <span id="hr-value" class="hr-value">--</span>
+            <span class="hr-unit">BPM</span>
+          </div>
+
+          <div id="quality-bar">
+            <div class="quality-label">Signal Quality</div>
+            <div class="quality-track">
+              <div class="quality-fill" id="quality-fill"></div>
+            </div>
+            <div class="quality-text" id="quality-text">--</div>
+          </div>
+
+          <div id="warmup-section">
+            <div class="warmup-label">Buffering frames…</div>
+            <div class="warmup-track">
+              <div class="warmup-fill" id="warmup-fill"></div>
+            </div>
+            <div class="warmup-text" id="warmup-text">0%</div>
+          </div>
+
+          <div id="elapsed-display">
+            <span class="elapsed-label">Elapsed</span>
+            <span class="elapsed-value" id="elapsed-value">0:00</span>
+          </div>
+
+          <div id="perf-stats">
+            <div class="perf-row">
+              <span class="perf-label">Face Detect</span>
+              <span class="perf-value" id="face-fps-value">--</span>
+              <span class="perf-unit">fps</span>
+            </div>
+            <div class="perf-row">
+              <span class="perf-label">HR Inference</span>
+              <span class="perf-value" id="hr-fps-value">--</span>
+              <span class="perf-unit">fps</span>
+            </div>
+          </div>
+
+          <div id="quality-issues" class="quality-issues"></div>
+        </aside>
+
+        <!-- ── Results Panel (visible after session) ── -->
+        <aside id="results-panel" class="glass-panel" hidden aria-label="Measurement results">
+          <h2 class="results-title">Measurement Complete</h2>
+
+          <div class="result-grid">
+            <div class="result-card result-primary">
+              <span class="result-label">Average HR</span>
+              <span class="result-value" id="result-avg-hr">--</span>
+              <span class="result-unit">BPM</span>
+            </div>
+            <div class="result-card">
+              <span class="result-label">Min HR</span>
+              <span class="result-value" id="result-min-hr">--</span>
+              <span class="result-unit">BPM</span>
+            </div>
+            <div class="result-card">
+              <span class="result-label">Max HR</span>
+              <span class="result-value" id="result-max-hr">--</span>
+              <span class="result-unit">BPM</span>
+            </div>
+            <div class="result-card">
+              <span class="result-label">Duration</span>
+              <span class="result-value" id="result-duration">--</span>
+              <span class="result-unit">sec</span>
+            </div>
+            <div class="result-card">
+              <span class="result-label">Confidence</span>
+              <span class="result-value" id="result-confidence">--</span>
+              <span class="result-unit">%</span>
+            </div>
+          </div>
+
+          <div class="measure-btn-group">
+            <button class="ctrl-btn ctrl-btn-primary" id="measure-btn" disabled>Start Measurement</button>
+            <button class="ctrl-btn ctrl-btn-reset" id="reset-btn" title="Reset measurement" hidden>&#x21bb;</button>
+          </div>
+        </aside>
+
+        </div><!-- /viewport-content -->
+
       </main>
 
     </div>

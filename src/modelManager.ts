@@ -40,6 +40,12 @@ export class ModelManager {
   // Per-class colors for nicer visualization
   private classColors: string[];
 
+  // Pre-allocated preprocessing resources — avoid DOM canvas creation and 4.7 MB
+  // Float32Array allocation on every inference call.
+  private readonly preprocessCanvas: OffscreenCanvas;
+  private readonly preprocessCtx: OffscreenCanvasRenderingContext2D;
+  private readonly preprocessBuffer: Float32Array;
+
   constructor(modelName: string, backend: Backend = 'webgpu-high-performance') {
     this.modelName = modelName;
     this.backend = backend;
@@ -50,6 +56,10 @@ export class ModelManager {
       const hue = (i * 137.508) % 360; // golden angle spacing
       return `hsl(${hue}, 90%, 55%)`;
     });
+
+    this.preprocessCanvas = new OffscreenCanvas(this.inputWidth, this.inputHeight);
+    this.preprocessCtx = this.preprocessCanvas.getContext('2d', { willReadFrequently: true })!;
+    this.preprocessBuffer = new Float32Array(3 * this.inputWidth * this.inputHeight);
   }
 
   async dispose(): Promise<void> {
@@ -175,10 +185,7 @@ export class ModelManager {
     padY: number;
     scale: number;
   } {
-    const canvas = document.createElement('canvas');
-    canvas.width = this.inputWidth;
-    canvas.height = this.inputHeight;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    const ctx = this.preprocessCtx;
 
     // Letterbox: scale to fit inside inputWidth x inputHeight, centered with black padding
     const scale = Math.min(this.inputWidth / videoElement.videoWidth, this.inputHeight / videoElement.videoHeight);
@@ -194,13 +201,13 @@ export class ModelManager {
     const imageData = ctx.getImageData(0, 0, this.inputWidth, this.inputHeight);
     const { data } = imageData;
     const pixelCount = this.inputWidth * this.inputHeight;
-    const float32Data = new Float32Array(3 * pixelCount);
+    const float32Data = this.preprocessBuffer; // reuse pre-allocated buffer
 
     // NCHW format, normalized 0-1
     for (let i = 0; i < pixelCount; i++) {
-      float32Data[i] = data[i * 4] / 255.0;                       // R
-      float32Data[pixelCount + i] = data[i * 4 + 1] / 255.0;      // G
-      float32Data[2 * pixelCount + i] = data[i * 4 + 2] / 255.0;  // B
+      float32Data[i] = data[i * 4] / 255;                       // R
+      float32Data[pixelCount + i] = data[i * 4 + 1] / 255;      // G
+      float32Data[2 * pixelCount + i] = data[i * 4 + 2] / 255;  // B
     }
 
     return {

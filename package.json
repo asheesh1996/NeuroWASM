@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "node -e \"const fs=require('fs'),p=require('path'),s=p.join('node_modules','onnxruntime-web','dist'),d='public';fs.readdirSync(s).filter(f=>f.startsWith('ort-wasm-simd-threaded')).forEach(f=>fs.copyFileSync(p.join(s,f),p.join(d,f)))\"",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview"
