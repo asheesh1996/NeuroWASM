@@ -1,4 +1,4 @@
-# NeuroWASM
+# [NeuroWASM](https://asheesh1996.github.io/NeuroWASM/)
 
 **Real-time heart rate monitoring in the browser — no server, no cloud, no latency.**
 
@@ -15,6 +15,7 @@ Two inference backends are supported:
 
 ## Demo
 
+Hosted at Github Page : https://asheesh1996.github.io/NeuroWASM/
 ```mermaid
 flowchart 
     A["Camera Feed"] --> B["Face Detection"]
